@@ -1,0 +1,6 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# 重新编译会改变 CDHash，导致辅助功能授权失效，所以保留正式 app、排除备份壳
+bin/*.bak.app/
