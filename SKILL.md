@@ -155,6 +155,12 @@ AAC-LC 48kHz、码率 **130kbps 左右**——比默认产出的 320kbps MP3 还
 标题里的「百万级录音棚」讲的是录音与监听设备（例如真力 1234 音箱、纽曼 149 话筒），
 不是数字规格。这种情况应当**如实告诉用户，别默认「Hi-Res 一定更好」**。
 
+> **ALAC 体积异常大 = afconvert 按 32-bit 编码了。** `afconvert -f m4af -d alac in.flac out.m4a`
+> 一条命令直转，会把源解成 32 位浮点再编码，16bit/44.1k 的歌体积涨到约 2.6 倍
+> （实测 4:20 的歌：28MB FLAC → **75MB** ALAC，正常应该是 29MB）。音质不损失，但白占空间。
+> `convert.py` 已修：先用 `afinfo` 读源位深，**≤16bit 先落 16bit WAV 中转**再进 ALAC。
+> 所以看到 ALAC 体积明显大于 FLAC 的两倍，先查 `afinfo` 里的 `from N-bit source`。
+
 ## 版本命名约定
 
 同一首歌往往有多个演绎（原曲、翻唱、剧情、纯歌、伴奏、现场、翻奏…）。**只要它们进同一张专辑，
@@ -518,6 +524,9 @@ python3 <skill>/scripts/music_lib.py find --title "歌名"
 | `resolve` 返回 `hidden: true` 且 `replied: false` | 回复失败或无权限，看 `reply_note`；可能需要用户手动回复一次 |
 | `pan.py` 返回 `state: need_login` | Chrome 里没登录该网盘 |
 | `pan.py` 识别不到文件 | 网页结构变化，先不带 `--save` 跑一次看 `text` 片段，再调整 `LIST_FILES_JS` |
+| `pan.py` 报 `state: unknown` / 0 个文件（百度提取码页） | 旧版只看正文有没有「提取码」，但百度/夸克把提示放在 input 的 placeholder 里，正文看不到；页面还挂广告 iframe 会被误进内层。已修：按可见输入框判定 `code_input`、有提取码框时不进 iframe、**文件列表优先于 need_login**（分享页常「有文件列表 + 角落登录入口」） |
+| 网盘分享能看到文件，但点转存/下载提示「账号涉嫌违规已被封禁」 | 分享者账号被封，链接实际已废。夸克这类页面不会说「链接失效」，只在操作时报这句——别在提取码上耗时间，直接换源 |
+| 网盘只给浏览器下载、客户端没启动 | `pan.py wait` 监控的是客户端下载目录（`~/Downloads`、`BaiduNetdiskDownload`）。浏览器直下时文件落在 `~/Downloads` 且先叫 `未确认 xxx.crdownload`，下完才改成真实文件名——按 `.crdownload` 是否存在判断完成即可 |
 | `downie.py` 超时没新文件 | Downie 卡在解析或该站点需要登录。打开 Downie 界面看队列；确认「自动开始下载」偏好已打开 |
 | `downie.py` 返回 `ext: .mp4` | Downie 的后处理没生效。`defaults write com.charliemonroe.Downie-4 XUPostprocessing -int 2` 后重启 Downie；脚本已有本地 ffmpeg 补转兜底 |
 | 后处理产出的是 `.m4a` 而不是 `.mp3` | Downie 的「音频格式偏好」被改过或「强制输出 MP3」被关。在 Downie 偏好设置的「后处理」页里勾上 Enforce MP3 / 强制输出 MP3，或让 `downie.py` 的本地补转兜底 |

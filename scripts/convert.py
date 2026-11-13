@@ -17,6 +17,7 @@ Music Converter 没有 AppleScript 字典，因此走「open -a 导入文件 + S
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import time
@@ -139,18 +140,76 @@ def probe(path: Path) -> dict:
 
 # ---------------------------------------------------------------- afconvert
 
+def _afinfo(path: Path) -> dict:
+    """读 afinfo 的「Data format」行，拿到采样率与源位深。
+
+    afinfo 对本机常见格式（flac/wav/aiff/m4a）会打印形如
+    `2 ch, 44100 Hz, flac (0x00000001) from 16-bit source` 的描述。
+    """
+    info = {"rate": None, "bits": None}
+    try:
+        cp = subprocess.run(["/usr/bin/afinfo", str(path)],
+                            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return info
+    for line in (cp.stdout or "").splitlines():
+        if "Data format" not in line:
+            continue
+        m_rate = re.search(r"(\d+)\s*Hz", line)
+        m_bits = re.search(r"(\d+)-bit source", line)
+        if m_rate:
+            info["rate"] = int(m_rate.group(1))
+        if m_bits:
+            info["bits"] = int(m_bits.group(1))
+        break
+    return info
+
+
 def convert_afconvert(src: Path, out: Path) -> Path:
-    """CoreAudio：任意受支持输入 -> ALAC in m4a。"""
+    """CoreAudio：任意受支持输入 -> ALAC in m4a。
+
+    **不能一条命令直接转**：`afconvert -d alac src out` 会先把源解成 32 位浮点，
+    产出的 ALAC 按 32-bit 编码，16bit/44.1k 的歌体积会涨到约 2.6 倍
+    （实测 4:20 的歌 28MB FLAC → 75MB ALAC，而不是正常的 29MB）。
+    音质没有损失，但白白翻倍占空间、导入 Music 也更慢。
+
+    所以 ≤16bit 的源先落到 16bit WAV 中转，再进 ALAC；>16bit 的源保持直转
+    （32 位浮点能精确承载 24bit，本来就不亏）。
+    """
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
         out.unlink()
-    cp = subprocess.run(
-        ["/usr/bin/afconvert", "-f", "m4af", "-d", "alac", str(src), str(out)],
-        capture_output=True, text=True, timeout=1800,
-    )
-    if cp.returncode != 0 or not out.exists():
-        raise OSError((cp.stderr or cp.stdout or "afconvert 失败").strip())
-    return out
+
+    meta = _afinfo(src)
+    bits = meta.get("bits") or 0
+    rate = meta.get("rate")
+
+    tmp_wav: Path | None = None
+    try:
+        if bits and bits <= 16 and rate:
+            tmp_wav = out.with_suffix(".tmp16.wav")
+            tmp_wav.unlink(missing_ok=True)
+            cp = subprocess.run(
+                ["/usr/bin/afconvert", "-f", "WAVE", "-d", f"LEI16@{rate}",
+                 str(src), str(tmp_wav)],
+                capture_output=True, text=True, timeout=1800,
+            )
+            if cp.returncode != 0 or not tmp_wav.exists():
+                raise OSError((cp.stderr or cp.stdout or "afconvert 解出 WAV 失败").strip())
+            src_for_alac = tmp_wav
+        else:
+            src_for_alac = src
+
+        cp = subprocess.run(
+            ["/usr/bin/afconvert", "-f", "m4af", "-d", "alac", str(src_for_alac), str(out)],
+            capture_output=True, text=True, timeout=1800,
+        )
+        if cp.returncode != 0 or not out.exists():
+            raise OSError((cp.stderr or cp.stdout or "afconvert 失败").strip())
+        return out
+    finally:
+        if tmp_wav is not None:
+            tmp_wav.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------- Music Converter

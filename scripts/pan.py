@@ -140,14 +140,34 @@ def detect_kind(url: str) -> str:
     return "unknown"
 
 
+def has_code_input(info: dict) -> bool:
+    """页面里有没有「提取码」输入框。
+
+    不能只靠 innerText 判断：百度/夸克的提取码页，提示语是 input 的 placeholder，
+    不进 innerText，所以正文里根本看不到「提取码」三个字（实测百度 init 页就是如此）。
+    """
+    for i in info.get("inputs", []):
+        blob = f"{i.get('placeholder', '')}{i.get('id', '')}{i.get('cls', '')}".lower()
+        if "提取码" in blob or "accesscode" in blob or "pwd" in blob or "passcode" in blob:
+            return True
+    return False
+
+
 def page_state(info: dict) -> str:
     text = info.get("text", "")
-    for state in ("err_gone", "err_code", "need_login", "code_input"):
+    # 硬错误优先
+    for state in ("err_gone", "err_code"):
         if any(h in text for h in STATE_HINTS[state]):
             return state
-    for h in STATE_HINTS["file_list"]:
-        if h in text:
-            return "file_list"
+    # 文件列表优先于登录：分享页常常「能看到文件列表 + 角落挂个登录入口」，
+    # 先判 need_login 会把可用的分享误判成要登录（实测夸克/百度都会这样）
+    if any(h in text for h in STATE_HINTS["file_list"]):
+        return "file_list"
+    if has_code_input(info):
+        return "code_input"
+    for state in ("need_login", "code_input"):
+        if any(h in text for h in STATE_HINTS[state]):
+            return state
     return "loading" if info.get("textLen", 0) < 50 else "unknown"
 
 
@@ -167,8 +187,10 @@ def cmd_open(args) -> None:
         state = page_state(info)
         log(f"页面状态：{state}（{info.get('title')}）")
 
-        # 分享页可能在 iframe 里，百度旧版就是这样
-        if state not in {"code_input", "file_list"} and info.get("hasIframe"):
+        # 分享页可能在 iframe 里（百度旧版）。但百度现在的 init 页也会挂一个广告 iframe，
+        # 那不是正文——所以页面已有提取码输入框时不要进 iframe，否则会读到广告页。
+        if (state not in {"code_input", "file_list"} and info.get("hasIframe")
+                and not has_code_input(info)):
             log("  页面含 iframe，尝试进入内层文档")
             cdp.eval_js(tid, "(() => {const f=document.querySelector('iframe');"
                              "if(f && f.contentDocument) return 'ok'; return 'blocked'})()")
